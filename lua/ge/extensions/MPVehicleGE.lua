@@ -27,6 +27,53 @@ local queueApplyTimer = 0
 local isAtSyncSpeed = true
 local hideNicknamesToggle = false
 
+local function decodeCustomPartPaints(partConfig)
+        if type(partConfig) ~= "string" or partConfig == "" then
+                return nil
+        end
+
+        local ok, decoded = pcall(jsonDecode, partConfig)
+        if not ok or type(decoded) ~= "table" then
+                return nil
+        end
+
+        if type(decoded.customPartPaints) == "table" then
+                return decoded.customPartPaints
+        end
+
+        if decoded.customPartPaints == nil then
+                return {}
+        end
+
+        return nil
+end
+
+local function collectCustomPartPaints(vehicleData, veh)
+        local config = vehicleData and vehicleData.config or nil
+        local customPartPaints = config and config.customPartPaints or nil
+
+        if type(customPartPaints) ~= "table" then
+                customPartPaints = nil
+                if veh then
+                        local decoded = decodeCustomPartPaints(veh:getField('partConfig', ''))
+                        if decoded ~= nil then
+                                customPartPaints = decoded
+                        end
+                end
+        end
+
+        if type(customPartPaints) ~= "table" then
+                customPartPaints = {}
+        end
+
+        local sanitized = deepcopy(customPartPaints)
+        if config then
+                config.customPartPaints = deepcopy(sanitized)
+        end
+
+        return sanitized
+end
+
 local original_removeAllExceptCurrent
 local original_spawnNewVehicle
 local original_replaceVehicle
@@ -1142,7 +1189,7 @@ local function sendVehicleSpawn(gameVehicleID)
 		vehicleTable.vid = gameVehicleID -- Game Vehicle ID
 		vehicleTable.jbm = veh:getJBeamFilename() -- JBeam
                 vehicleTable.vcf = MPHelpers.simplifyVehConfig(deepcopy(vehicleData.config)) -- Vehicle Config, contains paint data
-                vehicleTable.vcf.customPartPaints = deepcopy(vehicleData.config.customPartPaints or {})
+                vehicleTable.vcf.customPartPaints = collectCustomPartPaints(vehicleData, veh)
 		vehicleTable.pos = {pos.x, pos.y, pos.z} -- Position
 		vehicleTable.rot = {rot.x, rot.y, rot.z, rot.w} -- Rotation
 		vehicleTable.pro = settings.getValue("protectConfigFromClone", false) -- Should the config be protected?
@@ -1187,7 +1234,7 @@ local function sendVehicleEdit(gameVehicleID)
 	vehicleTable.pid = MPConfig.getPlayerServerID()
 	vehicleTable.jbm = veh:getJBeamFilename()
         vehicleTable.vcf = MPHelpers.simplifyVehConfig(deepcopy(vehicleData.config))
-        vehicleTable.vcf.customPartPaints = deepcopy(vehicleData.config.customPartPaints or {})
+        vehicleTable.vcf.customPartPaints = collectCustomPartPaints(vehicleData, veh)
 	vehicleTable.pro = settings.getValue("protectConfigFromClone", false) -- Should the config be protected?
 
 	if vehicleTable.pro == true then
