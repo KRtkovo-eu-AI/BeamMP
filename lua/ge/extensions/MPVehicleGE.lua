@@ -1141,7 +1141,8 @@ local function sendVehicleSpawn(gameVehicleID)
 		vehicleTable.pid = MPConfig.getPlayerServerID() -- Player Server ID
 		vehicleTable.vid = gameVehicleID -- Game Vehicle ID
 		vehicleTable.jbm = veh:getJBeamFilename() -- JBeam
-		vehicleTable.vcf = MPHelpers.simplifyVehConfig(deepcopy(vehicleData.config)) -- Vehicle Config, contains paint data
+                vehicleTable.vcf = MPHelpers.simplifyVehConfig(deepcopy(vehicleData.config)) -- Vehicle Config, contains paint data
+                vehicleTable.vcf.customPartPaints = deepcopy(vehicleData.config.customPartPaints or {})
 		vehicleTable.pos = {pos.x, pos.y, pos.z} -- Position
 		vehicleTable.rot = {rot.x, rot.y, rot.z, rot.w} -- Rotation
 		vehicleTable.pro = settings.getValue("protectConfigFromClone", false) -- Should the config be protected?
@@ -1185,7 +1186,8 @@ local function sendVehicleEdit(gameVehicleID)
 
 	vehicleTable.pid = MPConfig.getPlayerServerID()
 	vehicleTable.jbm = veh:getJBeamFilename()
-	vehicleTable.vcf = MPHelpers.simplifyVehConfig(deepcopy(vehicleData.config))
+        vehicleTable.vcf = MPHelpers.simplifyVehConfig(deepcopy(vehicleData.config))
+        vehicleTable.vcf.customPartPaints = deepcopy(vehicleData.config.customPartPaints or {})
 	vehicleTable.pro = settings.getValue("protectConfigFromClone", false) -- Should the config be protected?
 
 	if vehicleTable.pro == true then
@@ -1374,7 +1376,12 @@ local function applyVehEdit(serverID, data)
 		local tuningDiff = MPHelpers.tableDiff(playerVehicle.config.vars, vehicleConfig.vars)
 
 		local configChanged = tableSize(partsDiff) > 0 or tableSize(tuningDiff) > 0
-		local colorChanged = not MPHelpers.colorMatch(playerVehicle.config.paints, vehicleConfig.paints)
+                local colorChanged = not MPHelpers.colorMatch(
+                        playerVehicle.config.paints,
+                        vehicleConfig.paints,
+                        playerVehicle.config.customPartPaints,
+                        vehicleConfig.customPartPaints
+                )
 		--print("colorchanged: " .. tostring(colorChanged))
 		if configChanged or colorChanged then
 			tableMerge(playerVehicle.config, vehicleConfig) -- add new parts to the existing config
@@ -1382,12 +1389,23 @@ local function applyVehEdit(serverID, data)
 			if configChanged then
 				veh:setDynDataFieldbyName("autoEnterVehicle", 0, tostring((be:getPlayerVehicle(0) and be:getPlayerVehicle(0):getID() == gameVehicleID) or false))
 				veh:respawn(serialize(playerVehicle.config))
-			elseif vehicleConfig.paints then
-				log('I','applyVehEdit', "only color changed")
-				for k, v in pairs(vehicleConfig.paints) do
-					extensions.core_vehicle_manager.liveUpdateVehicleColors(gameVehicleID, veh, k, v)
-				end
-			end
+                        elseif vehicleConfig.paints or vehicleConfig.customPartPaints then
+                                log('I','applyVehEdit', "only color changed")
+                                if vehicleConfig.paints then
+                                        for k, v in pairs(vehicleConfig.paints) do
+                                                extensions.core_vehicle_manager.liveUpdateVehicleColors(gameVehicleID, veh, k, v)
+                                        end
+                                end
+
+                                if vehicleConfig.customPartPaints ~= nil then
+                                        if type(vehicleConfig.customPartPaints) == "table" then
+                                                playerVehicle.config.customPartPaints = deepcopy(vehicleConfig.customPartPaints)
+                                        else
+                                                playerVehicle.config.customPartPaints = {}
+                                        end
+                                end
+                                veh:setField('partConfig', '', serialize(playerVehicle.config))
+                        end
 		else
 			log('I','applyVehEdit', "received edit matches local copy, ignoring message")
 		end
