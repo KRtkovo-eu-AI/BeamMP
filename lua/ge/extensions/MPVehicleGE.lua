@@ -27,6 +27,65 @@ local queueApplyTimer = 0
 local isAtSyncSpeed = true
 local hideNicknamesToggle = false
 
+local function decodeCustomPartPaints(partConfig)
+        if type(partConfig) ~= "string" or partConfig == "" then
+                return nil
+        end
+
+        local ok, decoded = pcall(jsonDecode, partConfig)
+        if not ok or type(decoded) ~= "table" then
+                return nil
+        end
+
+        return decoded.customPartPaints
+end
+
+local function sanitizeCustomPartPaints(value)
+        if type(value) ~= "table" then
+                return {}
+        end
+
+        local sanitized = {}
+        for slotPath, slotPaints in pairs(value) do
+                if type(slotPath) == "string" and type(slotPaints) == "table" then
+                        local sanitizedSlot = {}
+                        for paintIndex, paintDefinition in ipairs(slotPaints) do
+                                if type(paintDefinition) == "table" then
+                                        sanitizedSlot[paintIndex] = deepcopy(paintDefinition)
+                                end
+                        end
+
+                        if next(sanitizedSlot) then
+                                sanitized[slotPath] = sanitizedSlot
+                        end
+                end
+        end
+
+        return sanitized
+end
+
+local function collectCustomPartPaints(vehicleData, veh)
+        local config = vehicleData and vehicleData.config or nil
+        local customPartPaints = config and config.customPartPaints or nil
+
+        if type(customPartPaints) ~= "table" then
+                customPartPaints = nil
+                if veh then
+                        local decoded = decodeCustomPartPaints(veh:getField('partConfig', ''))
+                        if decoded ~= nil then
+                                customPartPaints = decoded
+                        end
+                end
+        end
+
+        local sanitized = sanitizeCustomPartPaints(customPartPaints)
+        if config then
+                config.customPartPaints = deepcopy(sanitized)
+        end
+
+        return sanitized
+end
+
 local original_removeAllExceptCurrent
 local original_spawnNewVehicle
 local original_replaceVehicle
@@ -1141,7 +1200,8 @@ local function sendVehicleSpawn(gameVehicleID)
 		vehicleTable.pid = MPConfig.getPlayerServerID() -- Player Server ID
 		vehicleTable.vid = gameVehicleID -- Game Vehicle ID
 		vehicleTable.jbm = veh:getJBeamFilename() -- JBeam
-		vehicleTable.vcf = MPHelpers.simplifyVehConfig(deepcopy(vehicleData.config)) -- Vehicle Config, contains paint data
+                vehicleTable.vcf = MPHelpers.simplifyVehConfig(deepcopy(vehicleData.config)) -- Vehicle Config, contains paint data
+                vehicleTable.vcf.customPartPaints = collectCustomPartPaints(vehicleData, veh)
 		vehicleTable.pos = {pos.x, pos.y, pos.z} -- Position
 		vehicleTable.rot = {rot.x, rot.y, rot.z, rot.w} -- Rotation
 		vehicleTable.pro = settings.getValue("protectConfigFromClone", false) -- Should the config be protected?
@@ -1185,7 +1245,8 @@ local function sendVehicleEdit(gameVehicleID)
 
 	vehicleTable.pid = MPConfig.getPlayerServerID()
 	vehicleTable.jbm = veh:getJBeamFilename()
-	vehicleTable.vcf = MPHelpers.simplifyVehConfig(deepcopy(vehicleData.config))
+        vehicleTable.vcf = MPHelpers.simplifyVehConfig(deepcopy(vehicleData.config))
+        vehicleTable.vcf.customPartPaints = collectCustomPartPaints(vehicleData, veh)
 	vehicleTable.pro = settings.getValue("protectConfigFromClone", false) -- Should the config be protected?
 
 	if vehicleTable.pro == true then
@@ -1288,7 +1349,10 @@ local function applyVehSpawn(event)
 	local playerServerID = decodedData.pid -- Server ID of the player that sent the vehicle
 	local gameVehicleID  = decodedData.vid -- gameVehicleID of the player that sent the vehicle
 	local vehicleName    = decodedData.jbm -- Vehicle name
-	local vehicleConfig  = decodedData.vcf -- Vehicle config, contains paint data
+        local vehicleConfig  = decodedData.vcf -- Vehicle config, contains paint data
+        if vehicleConfig then
+                vehicleConfig.customPartPaints = sanitizeCustomPartPaints(vehicleConfig.customPartPaints)
+        end
 	local pos            = vec3(decodedData.pos)
 	local rot            = quat(0,0,1,0) * quat(decodedData.rot) -- the car rotates 180 degrees on spawn so we need to counter that
 	local ignitionLevel  = (type(decodedData.ign) == "number") and decodedData.ign or 3
@@ -1314,16 +1378,20 @@ local function applyVehSpawn(event)
 	local spawnedVehID = getGameVehicleID(event.serverVehicleID)
 	local spawnedVeh = spawnedVehID and be:getObjectByID(spawnedVehID) or nil
 
-	if spawnedVeh then -- if a vehicle with this ID was found update the obj
-		log('W', 'applyVehSpawn', "(spawn)Updating vehicle from server "..vehicleName.." with id "..spawnedVehID)
-		spawn.setVehicleObject(spawnedVeh, {model=vehicleName, config=serialize(vehicleConfig), pos=pos, rot=rot, cling=true})
-		spawnedVeh:setField("protected", 0, protected or "0")
-	else
-		log('W', 'applyVehSpawn', "Spawning new vehicle "..vehicleName.." from server")
-		spawnedVeh = spawn.spawnVehicle(vehicleName, serialize(vehicleConfig), pos, rot, { autoEnterVehicle=false, vehicleName="multiplayerVehicle", cling=true})
-		spawnedVehID = spawnedVeh:getID()
-		spawnedVeh:setField("protected", 0, protected or "0")
-		log('W', 'applyVehSpawn', "Spawned new vehicle "..vehicleName.." from server with id "..spawnedVehID)
+        if spawnedVeh then -- if a vehicle with this ID was found update the obj
+                log('W', 'applyVehSpawn', "(spawn)Updating vehicle from server "..vehicleName.." with id "..spawnedVehID)
+                local serializedConfig = serialize(vehicleConfig)
+                spawn.setVehicleObject(spawnedVeh, {model=vehicleName, config=serializedConfig, pos=pos, rot=rot, cling=true})
+                spawnedVeh:setField("protected", 0, protected or "0")
+                spawnedVeh:setField('partConfig', '', serializedConfig)
+        else
+                log('W', 'applyVehSpawn', "Spawning new vehicle "..vehicleName.." from server")
+                local serializedConfig = serialize(vehicleConfig)
+                spawnedVeh = spawn.spawnVehicle(vehicleName, serializedConfig, pos, rot, { autoEnterVehicle=false, vehicleName="multiplayerVehicle", cling=true})
+                spawnedVehID = spawnedVeh:getID()
+                spawnedVeh:setField("protected", 0, protected or "0")
+                spawnedVeh:setField('partConfig', '', serializedConfig)
+                log('W', 'applyVehSpawn', "Spawned new vehicle "..vehicleName.." from server with id "..spawnedVehID)
 
 		if not vehicles[event.serverVehicleID] then
 			vehicles[event.serverVehicleID] =
@@ -1355,26 +1423,39 @@ local function applyVehEdit(serverID, data)
 
 	local decodedData   = jsonDecode(data) -- Decode the data
 	local vehicleName   = decodedData.jbm -- Vehicle name
-	local vehicleConfig = decodedData.vcf -- Vehicle config
-	local protected       = decodedData.pro
+        local vehicleConfig = decodedData.vcf -- Vehicle config
+        local protected       = decodedData.pro
 
-	local playerName = players[decodedData.pid] and players[decodedData.pid].name or 'Unknown'
+        local playerName = players[decodedData.pid] and players[decodedData.pid].name or 'Unknown'
 
-	if checkIfVehiclenameInvalid(vehicleName, playerName, vehicles[serverID]) then return end
+        if checkIfVehiclenameInvalid(vehicleName, playerName, vehicles[serverID]) then return end
 
-	if settings.getValue("simplifyRemoteVehicles") then
-		vehicleName, vehicleConfig = simplifyVehicle(vehicleName, vehicleConfig)
-	end
+        if settings.getValue("simplifyRemoteVehicles") then
+                vehicleName, vehicleConfig = simplifyVehicle(vehicleName, vehicleConfig)
+        end
 
-	if vehicleName == veh:getJBeamFilename() then
-		log('I','applyVehEdit',"Updating vehicle "..gameVehicleID.." config")
-		local playerVehicle = extensions.core_vehicle_manager.getVehicleData(gameVehicleID)
+        if vehicleConfig then
+                vehicleConfig.customPartPaints = sanitizeCustomPartPaints(vehicleConfig.customPartPaints)
+        end
 
-		local partsDiff = MPHelpers.tableDiff(playerVehicle.config.partsTree, vehicleConfig.partsTree)
-		local tuningDiff = MPHelpers.tableDiff(playerVehicle.config.vars, vehicleConfig.vars)
+        if vehicleName == veh:getJBeamFilename() then
+                log('I','applyVehEdit',"Updating vehicle "..gameVehicleID.." config")
+                local playerVehicle = extensions.core_vehicle_manager.getVehicleData(gameVehicleID)
+
+                if playerVehicle and playerVehicle.config then
+                        playerVehicle.config.customPartPaints = sanitizeCustomPartPaints(playerVehicle.config.customPartPaints)
+                end
+
+                local partsDiff = MPHelpers.tableDiff(playerVehicle.config.partsTree, vehicleConfig.partsTree)
+                local tuningDiff = MPHelpers.tableDiff(playerVehicle.config.vars, vehicleConfig.vars)
 
 		local configChanged = tableSize(partsDiff) > 0 or tableSize(tuningDiff) > 0
-		local colorChanged = not MPHelpers.colorMatch(playerVehicle.config.paints, vehicleConfig.paints)
+                local colorChanged = not MPHelpers.colorMatch(
+                        playerVehicle.config.paints,
+                        vehicleConfig.paints,
+                        playerVehicle.config.customPartPaints,
+                        vehicleConfig.customPartPaints
+                )
 		--print("colorchanged: " .. tostring(colorChanged))
 		if configChanged or colorChanged then
 			tableMerge(playerVehicle.config, vehicleConfig) -- add new parts to the existing config
@@ -1382,12 +1463,23 @@ local function applyVehEdit(serverID, data)
 			if configChanged then
 				veh:setDynDataFieldbyName("autoEnterVehicle", 0, tostring((be:getPlayerVehicle(0) and be:getPlayerVehicle(0):getID() == gameVehicleID) or false))
 				veh:respawn(serialize(playerVehicle.config))
-			elseif vehicleConfig.paints then
-				log('I','applyVehEdit', "only color changed")
-				for k, v in pairs(vehicleConfig.paints) do
-					extensions.core_vehicle_manager.liveUpdateVehicleColors(gameVehicleID, veh, k, v)
-				end
-			end
+                        elseif vehicleConfig.paints or vehicleConfig.customPartPaints then
+                                log('I','applyVehEdit', "only color changed")
+                                if vehicleConfig.paints then
+                                        for k, v in pairs(vehicleConfig.paints) do
+                                                extensions.core_vehicle_manager.liveUpdateVehicleColors(gameVehicleID, veh, k, v)
+                                        end
+                                end
+
+                                if vehicleConfig.customPartPaints ~= nil then
+                                        if type(vehicleConfig.customPartPaints) == "table" then
+                                                playerVehicle.config.customPartPaints = deepcopy(vehicleConfig.customPartPaints)
+                                        else
+                                                playerVehicle.config.customPartPaints = {}
+                                        end
+                                end
+                                veh:setField('partConfig', '', serialize(playerVehicle.config))
+                        end
 		else
 			log('I','applyVehEdit', "received edit matches local copy, ignoring message")
 		end
@@ -1694,10 +1786,22 @@ local function onVehicleColorChanged(gameVehicleID, index, paint)
     if vehicle and vehicle.serverVehicleString and vehicle.isLocal then -- If serverVehicleID not null and player own vehicle
 
         local veh = be:getObjectByID(gameVehicleID) -- get vehicle as object
-		local paintData =  MPHelpers.getColorsFromVehObj(veh)
+        local paintData =  MPHelpers.getColorsFromVehObj(veh)
         paintData[index] = paint --insert new paint at index as chosen from color picker
 
-		MPGameNetwork.send('Op:'..vehicle.serverVehicleString..":"..jsonEncode(paintData).."")
+        local vehicleData = extensions.core_vehicle_manager.getVehicleData(gameVehicleID)
+        local customPartPaints = collectCustomPartPaints(vehicleData, veh)
+
+        if vehicleData and vehicleData.config and type(vehicleData.config.paints) == "table" then
+                vehicleData.config.paints[index] = deepcopy(paint)
+        end
+
+        local payload = {
+                paints = paintData,
+                customPartPaints = customPartPaints,
+        }
+
+        MPGameNetwork.send('Op:'..vehicle.serverVehicleString..":"..jsonEncode(payload).."")
     end
 end
 
@@ -1706,13 +1810,17 @@ end
 
 --============================ ON VEHICLE SPAWNED (SERVER) ============================
 local function onServerVehicleSpawned(playerRole, playerNickname, serverVehicleID, data)
-	local decodedData = jsonDecode(data)
-	if not decodedData then --JSON decode failed
-		log("E", "onServerVehicleSpawned", "Failed to spawn vehicle from "..playerNickname.."! (Invalid JSON data)")
-		return
-	end
+        local decodedData = jsonDecode(data)
+        if not decodedData then --JSON decode failed
+                log("E", "onServerVehicleSpawned", "Failed to spawn vehicle from "..playerNickname.."! (Invalid JSON data)")
+                return
+        end
 
-	local playerServerID = tonumber(decodedData.pid) -- Server ID of the owner
+        if decodedData.vcf then
+                decodedData.vcf.customPartPaints = sanitizeCustomPartPaints(decodedData.vcf.customPartPaints)
+        end
+
+        local playerServerID = tonumber(decodedData.pid) -- Server ID of the owner
 	local gameVehicleID  = tonumber(decodedData.vid) -- remote gameVehicleID
 
 	--create player object if this is their first vehicle
@@ -1792,19 +1900,23 @@ end
 
 --============================ ON VEHICLE EDITED (SERVER) ============================
 local function onServerVehicleEdited(serverID, data)
-	local decodedData = jsonDecode(data)
-	log('I', 'onServerVehicleEdited', "Edit received for "..serverID)
+        local decodedData = jsonDecode(data)
+        log('I', 'onServerVehicleEdited', "Edit received for "..serverID)
 
-	if not vehicles[serverID] then
-		vehicles[serverID] = Vehicle:new({ ServerVehicleString = serverID, isSpawned = false })
-	end
+        if not vehicles[serverID] then
+                vehicles[serverID] = Vehicle:new({ ServerVehicleString = serverID, isSpawned = false })
+        end
 	local owner = vehicles[serverID]:getOwner()
 	if not owner.vehicles.IDs[serverID] then owner:addVehicle(vehicles[serverID]) end
 
 	local saveVehicleRot = players_vehicle_configs[serverID].rot
 	local saveVehiclePos = players_vehicle_configs[serverID].pos
 
-	players_vehicle_configs[serverID] = decodedData
+        if decodedData.vcf then
+                decodedData.vcf.customPartPaints = sanitizeCustomPartPaints(decodedData.vcf.customPartPaints)
+        end
+
+        players_vehicle_configs[serverID] = decodedData
 	players_vehicle_configs[serverID].pos = saveVehiclePos
 	players_vehicle_configs[serverID].rot = saveVehicleRot
 
@@ -1914,35 +2026,68 @@ local function onServerVehicleColorChanged(serverVehicleID, data)
     local vehicle = getVehicleByServerID(serverVehicleID) -- get vehicle table for this vehicle
 
     if vehicle and vehicle.serverVehicleString and not vehicle.isLocal then -- If serverVehicleID not null and not player own vehicle
+        local decodedPayload = jsonDecode(data)
+        if not decodedPayload then return end
+
+        local paints = decodedPayload
+        local customPartPaints
+        local hasCustomPartPaints = false
+
+        if type(decodedPayload[1]) ~= "table" then
+            paints = decodedPayload.paints or {}
+            if decodedPayload.customPartPaints ~= nil then
+                hasCustomPartPaints = true
+                customPartPaints = sanitizeCustomPartPaints(decodedPayload.customPartPaints)
+            end
+        end
+
+        if type(paints) ~= "table" then
+            return
+        end
+
         if gameVehicleID and gameVehicleID ~= -1 and not vehicle.editQueue then
             local veh = be:getObjectByID(gameVehicleID) -- Get associated vehicle
             if veh then
-                local paint = jsonDecode(data) -- Decoded data
-                if paint then -- if there's paint data
-                    veh:queueLuaCommand("extensions.hook(\"onBeamMPVehicleColorChange\")")
-                    for k, v in pairs(paint) do -- apply paint
-                        extensions.core_vehicle_manager.liveUpdateVehicleColors(gameVehicleID, veh, k, v)
-                    end
-                    local newConfig = extensions.core_vehicle_manager.getVehicleData(gameVehicleID).config
-                newConfig.paints = paint
+                veh:queueLuaCommand("extensions.hook(\"onBeamMPVehicleColorChange\")")
+                for k, v in pairs(paints) do -- apply paint
+                    extensions.core_vehicle_manager.liveUpdateVehicleColors(gameVehicleID, veh, k, v)
+                end
+
+                local newConfig = extensions.core_vehicle_manager.getVehicleData(gameVehicleID).config
+                newConfig.paints = paints
+
+                if hasCustomPartPaints then
+                    newConfig.customPartPaints = deepcopy(customPartPaints)
+                end
 
                 veh:setField('partConfig', '', serialize(newConfig))
-                end
             end
         elseif vehicle.spawnQueue then
             local decodedData = jsonDecode(vehicle.spawnQueue.data)
-            decodedData.vcf.paints = jsonDecode(data)
-            vehicle.spawnQueue.data = jsonEncode(decodedData)
+            if decodedData and decodedData.vcf then
+                decodedData.vcf.paints = paints
+                if hasCustomPartPaints then
+                    decodedData.vcf.customPartPaints = deepcopy(customPartPaints)
+                end
+                vehicle.spawnQueue.data = jsonEncode(decodedData)
+            end
         elseif vehicle.editQueue then
             local decodedData = jsonDecode(vehicle.editQueue)
-            decodedData.vcf.paints = jsonDecode(data)
-            vehicle.editQueue = jsonEncode(decodedData)
+            if decodedData and decodedData.vcf then
+                decodedData.vcf.paints = paints
+                if hasCustomPartPaints then
+                    decodedData.vcf.customPartPaints = deepcopy(customPartPaints)
+                end
+                vehicle.editQueue = jsonEncode(decodedData)
+            end
         end
 
         local deletedVehicleData = players_vehicle_configs[serverVehicleID]
         if deletedVehicleData and deletedVehicleData.vcf then
-            local paint = jsonDecode(data)
-            players_vehicle_configs[serverVehicleID].vcf.paints = paint
+            deletedVehicleData.vcf.paints = paints
+            if hasCustomPartPaints then
+                deletedVehicleData.vcf.customPartPaints = deepcopy(customPartPaints)
+            end
         end
     end
 end

@@ -64,9 +64,15 @@ end
 --- Checks if two colors match by comparing their serialized values.
 -- @param old table The first color to compare.
 -- @param new table The second color to compare.
+-- @param oldCustom table|nil The first set of custom part paints to compare.
+-- @param newCustom table|nil The second set of custom part paints to compare.
 -- @return boolean True if the colors match, false otherwise.
-local function colorMatch(old, new)
-	return serialize(old) == serialize(new)
+local function colorMatch(old, new, oldCustom, newCustom)
+        if serialize(old or {}) ~= serialize(new or {}) then
+                return false
+        end
+
+        return serialize(oldCustom or {}) == serialize(newCustom or {})
 end
 
 --- Base64 encodes a string (RFC 2045)
